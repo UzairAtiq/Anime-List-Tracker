@@ -1,13 +1,21 @@
-// Multi-tier Database Storage Manager
-// Cascading fallback architecture: Supabase (Cloud) -> SQLite (Local WASM) -> JSON (Local Store)
+/** @fileoverview Multi-tier storage manager coordinating graceful fallback between Supabase, SQLite WASM, and JSON. */
 
-import { supabaseStorage } from './supabaseStorage';
-import { sqliteStorage } from './sqliteStorage';
-import { jsonStorage } from './jsonStorage';
+import { supabaseAdapter } from './adapters/supabaseAdapter';
+import { sqliteAdapter } from './adapters/sqliteAdapter';
+import { jsonAdapter } from './adapters/jsonAdapter';
 
+/**
+ * StorageManager orchestrates data access across three tiers:
+ * Tier 1: Supabase (Cloud PostgreSQL)
+ * Tier 2: SQLite (Local WebAssembly + IndexedDB)
+ * Tier 3: JSON (Local Storage / In-memory)
+ */
 class StorageManager {
+  /**
+   * Initializes the storage manager state and listeners.
+   */
   constructor() {
-    this.activeTier = null; // 'supabase' | 'sqlite' | 'json'
+    this.activeTier = null;
     this.tierStatuses = {
       supabase: { status: 'pending', error: null },
       sqlite: { status: 'pending', error: null },
@@ -16,13 +24,26 @@ class StorageManager {
     this.listeners = new Set();
   }
 
+  /**
+   * Registers a subscriber callback for storage manager state changes.
+   *
+   * Steps:
+   * 1. Add listener function to internal set.
+   * 2. Immediately invoke listener with current state snapshot.
+   * 3. Return an unsubscribe cleanup function.
+   *
+   * @param {Function} listener - Callback invoked on state changes.
+   * @returns {Function} Unsubscribe function.
+   */
   subscribe(listener) {
     this.listeners.add(listener);
-    // Call immediately with current state
     listener(this.getState());
     return () => this.listeners.delete(listener);
   }
 
+  /**
+   * Notifies all active subscribers of the latest state.
+   */
   notify() {
     const state = this.getState();
     this.listeners.forEach((listener) => {
@@ -34,6 +55,11 @@ class StorageManager {
     });
   }
 
+  /**
+   * Returns a snapshot of the current storage manager state.
+   *
+   * @returns {{ activeTier: string|null, activeTierName: string, tierStatuses: Object }} State snapshot.
+   */
   getState() {
     return {
       activeTier: this.activeTier,
@@ -42,6 +68,12 @@ class StorageManager {
     };
   }
 
+  /**
+   * Resolves a human-readable display label for a given storage tier.
+   *
+   * @param {string|null} tier - Tier identifier ('supabase' | 'sqlite' | 'json').
+   * @returns {string} Human-readable tier name.
+   */
   getTierDisplayName(tier) {
     switch (tier) {
       case 'supabase':
@@ -55,95 +87,99 @@ class StorageManager {
     }
   }
 
-  // Background mirror helper: keeps local fallbacks in sync with whatever data is loaded/modified
+  /**
+   * Synchronizes operations to lower tiers in the background to maintain live mirrors.
+   *
+   * Steps:
+   * 1. If active tier is Supabase, mirror change to SQLite.
+   * 2. Always mirror change to JSON fallback store.
+   *
+   * @param {string} operation - CRUD operation ('add' | 'update' | 'delete' | 'syncAll').
+   * @param {...any} args - Operation arguments.
+   * @returns {Promise<void>}
+   */
   async mirrorToFallbacks(operation, ...args) {
-    // Mirror to SQLite if active tier was Supabase
     if (this.activeTier === 'supabase') {
       try {
         if (operation === 'add') {
-          await sqliteStorage.addAnime(args[0]);
+          await sqliteAdapter.addAnime(args[0]);
         } else if (operation === 'update') {
-          await sqliteStorage.updateAnime(args[0], args[1]);
+          await sqliteAdapter.updateAnime(args[0], args[1]);
         } else if (operation === 'delete') {
-          await sqliteStorage.deleteAnime(args[0]);
+          await sqliteAdapter.deleteAnime(args[0]);
         } else if (operation === 'syncAll') {
-          await sqliteStorage.syncAll(args[0]);
+          await sqliteAdapter.syncAll(args[0]);
         }
       } catch (e) {
-        console.warn('[StorageManager] Mirror to SQLite skipped:', e.message);
+        console.warn('[StorageManager] SQLite mirror skipped:', e.message);
       }
     }
 
-    // Always mirror to JSON fallback
     try {
       if (operation === 'add') {
-        await jsonStorage.addAnime(args[0]);
+        await jsonAdapter.addAnime(args[0]);
       } else if (operation === 'update') {
-        await jsonStorage.updateAnime(args[0], args[1]);
+        await jsonAdapter.updateAnime(args[0], args[1]);
       } else if (operation === 'delete') {
-        await jsonStorage.deleteAnime(args[0]);
+        await jsonAdapter.deleteAnime(args[0]);
       } else if (operation === 'syncAll') {
-        await jsonStorage.syncAll(args[0]);
+        await jsonAdapter.syncAll(args[0]);
       }
     } catch (e) {
-      console.warn('[StorageManager] Mirror to JSON skipped:', e.message);
+      console.warn('[StorageManager] JSON mirror skipped:', e.message);
     }
   }
 
+  /**
+   * Retrieves all anime records, evaluating tiers in priority cascade.
+   *
+   * Steps:
+   * 1. Try Supabase; if successful, set activeTier to 'supabase' and mirror to fallbacks.
+   * 2. On Supabase failure, record error and fall back to SQLite WASM.
+   * 3. If SQLite succeeds, set activeTier to 'sqlite' and mirror to JSON.
+   * 4. If SQLite fails, fall back to JSON storage as infallible 3rd tier.
+   *
+   * @returns {Promise<Array<Object>>} List of anime records.
+   */
   async getAnimes() {
-    // 1. Try Supabase
     try {
-      console.log('[StorageManager] Attempting Tier 1: Supabase...');
-      const animes = await supabaseStorage.getAnimes();
+      const animes = await supabaseAdapter.getAnimes();
       this.activeTier = 'supabase';
       this.tierStatuses.supabase = { status: 'connected', error: null };
       this.notify();
-      console.log(`[StorageManager] Supabase connected successfully (${animes.length} items).`);
-      // Background mirror to SQLite & JSON
       this.mirrorToFallbacks('syncAll', animes);
       return animes;
     } catch (supabaseError) {
       const errorMsg = supabaseError?.message || 'Unreachable or failed connection';
-      console.warn('[StorageManager] Tier 1 (Supabase) failed:', errorMsg);
       this.tierStatuses.supabase = { status: 'failed', error: errorMsg };
     }
 
-    // 2. Try SQLite
     try {
-      console.log('[StorageManager] Falling back to Tier 2: SQLite (WASM)...');
-      const animes = await sqliteStorage.getAnimes();
+      const animes = await sqliteAdapter.getAnimes();
       this.activeTier = 'sqlite';
       this.tierStatuses.sqlite = { status: 'connected', error: null };
       this.notify();
-      console.log(`[StorageManager] SQLite active (${animes.length} items).`);
 
-      // If SQLite is empty, check if JSON fallback has data from previous sessions to seed SQLite
       if (animes.length === 0) {
-        const jsonAnimes = await jsonStorage.getAnimes();
+        const jsonAnimes = await jsonAdapter.getAnimes();
         if (jsonAnimes.length > 0) {
-          console.log(`[StorageManager] Seeding SQLite from existing JSON store (${jsonAnimes.length} items)...`);
-          await sqliteStorage.syncAll(jsonAnimes);
+          await sqliteAdapter.syncAll(jsonAnimes);
           return jsonAnimes;
         }
       }
 
-      // Background mirror to JSON
       this.mirrorToFallbacks('syncAll', animes);
       return animes;
     } catch (sqliteError) {
       const errorMsg = sqliteError?.message || 'Failed to initialize SQLite';
-      console.warn('[StorageManager] Tier 2 (SQLite) failed:', errorMsg);
       this.tierStatuses.sqlite = { status: 'failed', error: errorMsg };
     }
 
-    // 3. Fallback to JSON
-    console.log('[StorageManager] Falling back to Tier 3: JSON Storage...');
     try {
-      const animes = await jsonStorage.getAnimes();
+      const animes = await jsonAdapter.getAnimes();
       this.activeTier = 'json';
       this.tierStatuses.json = { status: 'connected', error: null };
       this.notify();
-      console.log(`[StorageManager] JSON Storage active (${animes.length} items).`);
       return animes;
     } catch (jsonError) {
       console.error('[StorageManager] Critical error in JSON storage:', jsonError);
@@ -153,54 +189,73 @@ class StorageManager {
     }
   }
 
+  /**
+   * Adds an anime record, executing against the active tier with graceful degradation.
+   *
+   * Steps:
+   * 1. If Supabase is active, try supabaseAdapter.addAnime.
+   * 2. On failure, degrade to sqliteAdapter.addAnime.
+   * 3. On failure, degrade to jsonAdapter.addAnime.
+   * 4. Return created anime object.
+   *
+   * @param {Object} animeData - Anime attributes.
+   * @returns {Promise<Object>} Added anime object.
+   */
   async addAnime(animeData) {
-    // Tier 1: Supabase
     if (this.activeTier === 'supabase' || !this.activeTier) {
       try {
-        const added = await supabaseStorage.addAnime(animeData);
+        const added = await supabaseAdapter.addAnime(animeData);
         this.activeTier = 'supabase';
         this.tierStatuses.supabase = { status: 'connected', error: null };
         this.notify();
         this.mirrorToFallbacks('add', added);
         return added;
       } catch (err) {
-        console.warn('[StorageManager] Supabase addAnime failed, falling back to SQLite:', err.message);
         this.tierStatuses.supabase = { status: 'failed', error: err.message };
         this.activeTier = 'sqlite';
       }
     }
 
-    // Tier 2: SQLite
     if (this.activeTier === 'sqlite') {
       try {
-        const added = await sqliteStorage.addAnime(animeData);
+        const added = await sqliteAdapter.addAnime(animeData);
         this.activeTier = 'sqlite';
         this.tierStatuses.sqlite = { status: 'connected', error: null };
         this.notify();
         this.mirrorToFallbacks('add', added);
         return added;
       } catch (err) {
-        console.warn('[StorageManager] SQLite addAnime failed, falling back to JSON:', err.message);
         this.tierStatuses.sqlite = { status: 'failed', error: err.message };
         this.activeTier = 'json';
       }
     }
 
-    // Tier 3: JSON
-    const added = await jsonStorage.addAnime(animeData);
+    const added = await jsonAdapter.addAnime(animeData);
     this.activeTier = 'json';
     this.notify();
     return added;
   }
 
+  /**
+   * Updates an anime record, executing against the active tier with fallback degradation.
+   *
+   * Steps:
+   * 1. Try active tier update.
+   * 2. Degrade to next tier on failure.
+   * 3. Mirror updates to fallbacks.
+   * 4. Return updated anime entity.
+   *
+   * @param {number|string} id - Record identifier.
+   * @param {Object} updates - Updated field properties.
+   * @returns {Promise<Object|null>} Updated anime entity.
+   */
   async updateAnime(id, updates) {
     if (this.activeTier === 'supabase') {
       try {
-        const updated = await supabaseStorage.updateAnime(id, updates);
+        const updated = await supabaseAdapter.updateAnime(id, updates);
         this.mirrorToFallbacks('update', id, updates);
         return updated;
       } catch (err) {
-        console.warn('[StorageManager] Supabase updateAnime failed, degrading to SQLite:', err.message);
         this.tierStatuses.supabase = { status: 'failed', error: err.message };
         this.activeTier = 'sqlite';
       }
@@ -208,30 +263,40 @@ class StorageManager {
 
     if (this.activeTier === 'sqlite') {
       try {
-        const updated = await sqliteStorage.updateAnime(id, updates);
+        const updated = await sqliteAdapter.updateAnime(id, updates);
         this.mirrorToFallbacks('update', id, updates);
         return updated;
       } catch (err) {
-        console.warn('[StorageManager] SQLite updateAnime failed, degrading to JSON:', err.message);
         this.tierStatuses.sqlite = { status: 'failed', error: err.message };
         this.activeTier = 'json';
       }
     }
 
-    const updated = await jsonStorage.updateAnime(id, updates);
+    const updated = await jsonAdapter.updateAnime(id, updates);
     this.activeTier = 'json';
     this.notify();
     return updated;
   }
 
+  /**
+   * Deletes an anime record, executing against active tier with fallback degradation.
+   *
+   * Steps:
+   * 1. Try active tier deletion.
+   * 2. Degrade to next tier on failure.
+   * 3. Mirror deletion to fallbacks.
+   * 4. Return true.
+   *
+   * @param {number|string} id - Record identifier.
+   * @returns {Promise<boolean>} True if deleted.
+   */
   async deleteAnime(id) {
     if (this.activeTier === 'supabase') {
       try {
-        await supabaseStorage.deleteAnime(id);
+        await supabaseAdapter.deleteAnime(id);
         this.mirrorToFallbacks('delete', id);
         return true;
       } catch (err) {
-        console.warn('[StorageManager] Supabase deleteAnime failed, degrading to SQLite:', err.message);
         this.tierStatuses.supabase = { status: 'failed', error: err.message };
         this.activeTier = 'sqlite';
       }
@@ -239,17 +304,16 @@ class StorageManager {
 
     if (this.activeTier === 'sqlite') {
       try {
-        await sqliteStorage.deleteAnime(id);
+        await sqliteAdapter.deleteAnime(id);
         this.mirrorToFallbacks('delete', id);
         return true;
       } catch (err) {
-        console.warn('[StorageManager] SQLite deleteAnime failed, degrading to JSON:', err.message);
         this.tierStatuses.sqlite = { status: 'failed', error: err.message };
         this.activeTier = 'json';
       }
     }
 
-    await jsonStorage.deleteAnime(id);
+    await jsonAdapter.deleteAnime(id);
     this.activeTier = 'json';
     this.notify();
     return true;

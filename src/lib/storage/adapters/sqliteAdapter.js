@@ -1,90 +1,47 @@
-// SQLite Storage Adapter (Secondary Fallback)
-// Runs real SQLite in-browser via WebAssembly (sql.js) and persists binary DB state in IndexedDB.
+/** @fileoverview Tier 2 storage adapter running in-browser SQLite WebAssembly via sql.js with binary persistence. */
 
 import initSqlJs from 'sql.js';
-
-const IDB_NAME = 'anime_tracker_sqlite_db';
-const IDB_STORE = 'sqlite_state';
-const IDB_KEY = 'database_bytes';
-const LOCAL_STORAGE_KEY = 'anime_tracker_sqlite_b64';
+import { loadIndexedDbBytes, persistIndexedDbBytes } from '../persistence/indexedDbStorage';
+import { loadLocalStorageBytes, persistLocalStorageBytes } from '../persistence/localStorageBackup';
 
 let sqlModule = null;
 let dbInstance = null;
 let initPromise = null;
 
-// IndexedDB Helper
-function openIndexedDB() {
-  return new Promise((resolve, reject) => {
-    if (typeof window === 'undefined' || !window.indexedDB) {
-      return reject(new Error('IndexedDB not supported'));
-    }
-    const request = indexedDB.open(IDB_NAME, 1);
-    request.onupgradeneeded = (event) => {
-      const db = event.target.result;
-      if (!db.objectStoreNames.contains(IDB_STORE)) {
-        db.createObjectStore(IDB_STORE);
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function loadPersistedBytes() {
+/**
+ * Persists SQLite binary export to IndexedDB, falling back to localStorage if necessary.
+ *
+ * Steps:
+ * 1. Attempt to store bytes in IndexedDB.
+ * 2. If IndexedDB fails, fall back to base64 localStorage persistence.
+ *
+ * @param {Uint8Array} bytes - Binary database bytes.
+ * @returns {Promise<void>}
+ */
+async function saveBytes(bytes) {
   try {
-    const idb = await openIndexedDB();
-    return new Promise((resolve) => {
-      const tx = idb.transaction(IDB_STORE, 'readonly');
-      const store = tx.objectStore(IDB_STORE);
-      const req = store.get(IDB_KEY);
-      req.onsuccess = () => resolve(req.result || null);
-      req.onerror = () => resolve(null);
-    });
-  } catch (idbErr) {
-    console.warn('[SQLiteStorage] IndexedDB load failed, trying localStorage:', idbErr);
-    try {
-      const b64 = localStorage.getItem(LOCAL_STORAGE_KEY);
-      if (b64) {
-        const binStr = atob(b64);
-        const len = binStr.length;
-        const bytes = new Uint8Array(len);
-        for (let i = 0; i < len; i++) {
-          bytes[i] = binStr.charCodeAt(i);
-        }
-        return bytes;
-      }
-    } catch {
-      // ignore
-    }
-    return null;
+    await persistIndexedDbBytes(bytes);
+  } catch (err) {
+    console.warn('[SqliteAdapter] IndexedDB save failed, using localStorage:', err);
+    persistLocalStorageBytes(bytes);
   }
 }
 
-async function persistBytes(bytes) {
-  try {
-    const idb = await openIndexedDB();
-    return new Promise((resolve, reject) => {
-      const tx = idb.transaction(IDB_STORE, 'readwrite');
-      const store = tx.objectStore(IDB_STORE);
-      const req = store.put(bytes, IDB_KEY);
-      req.onsuccess = () => resolve(true);
-      req.onerror = () => reject(req.error);
-    });
-  } catch (idbErr) {
-    try {
-      // Fallback: convert to binary string and base64
-      let binary = '';
-      const len = bytes.byteLength;
-      for (let i = 0; i < len; i++) {
-        binary += String.fromCharCode(bytes[i]);
-      }
-      localStorage.setItem(LOCAL_STORAGE_KEY, btoa(binary));
-    } catch (lsErr) {
-      console.warn('[SQLiteStorage] Failed to persist SQLite bytes to localStorage:', lsErr);
-    }
-  }
-}
-
+/**
+ * Initializes and caches the SQLite WASM database instance.
+ *
+ * Steps:
+ * 1. Return cached database instance if already loaded.
+ * 2. If initialization is in progress, return the active promise.
+ * 3. Load sql.js WASM module from /sql-wasm-browser.wasm.
+ * 4. Try loading persisted bytes from IndexedDB, then localStorage.
+ * 5. Instantiate new or restored SQL.Database.
+ * 6. Execute CREATE TABLE and index queries.
+ * 7. Persist initial schema and return database instance.
+ *
+ * @returns {Promise<Object>} The active SQLite database connection.
+ * @throws {Error} If WASM fails to load or compile.
+ */
 async function getOrInitDb() {
   if (dbInstance) return dbInstance;
   if (initPromise) return initPromise;
@@ -100,19 +57,28 @@ async function getOrInitDb() {
       });
     }
 
-    const savedBytes = await loadPersistedBytes();
+    let savedBytes = null;
+    try {
+      savedBytes = await loadIndexedDbBytes();
+    } catch {
+      savedBytes = null;
+    }
+
+    if (!savedBytes) {
+      savedBytes = loadLocalStorageBytes();
+    }
+
     if (savedBytes && savedBytes.length > 0) {
       try {
         dbInstance = new sqlModule.Database(savedBytes);
       } catch (err) {
-        console.warn('[SQLiteStorage] Existing DB corrupted, creating fresh database:', err);
+        console.warn('[SqliteAdapter] Existing DB corrupted, creating fresh database:', err);
         dbInstance = new sqlModule.Database();
       }
     } else {
       dbInstance = new sqlModule.Database();
     }
 
-    // Initialize Schema
     dbInstance.run(`
       CREATE TABLE IF NOT EXISTS animes (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -127,29 +93,52 @@ async function getOrInitDb() {
       CREATE INDEX IF NOT EXISTS idx_animes_name ON animes(name);
     `);
 
-    // Auto-save initial schema
-    await persistBytes(dbInstance.export());
+    await saveBytes(dbInstance.export());
     return dbInstance;
   })();
 
   return initPromise;
 }
 
-export const sqliteStorage = {
+/**
+ * SQLite WASM storage adapter implementing standard storage interface.
+ */
+export const sqliteAdapter = {
   name: 'sqlite',
   displayName: 'SQLite (Local WASM)',
 
+  /**
+   * Performs health check by running a test SELECT query on the SQLite engine.
+   *
+   * Steps:
+   * 1. Initialize or get SQLite database.
+   * 2. Execute 'SELECT 1;' query.
+   * 3. Return true if query yields result, false on any error.
+   *
+   * @returns {Promise<boolean>} True if SQLite is healthy.
+   * @throws {never}
+   */
   async isHealthy() {
     try {
       const db = await getOrInitDb();
       const res = db.exec('SELECT 1;');
       return Boolean(res && res.length > 0);
-    } catch (e) {
-      console.error('[SQLiteStorage] Health check failed:', e);
+    } catch {
       return false;
     }
   },
 
+  /**
+   * Queries all animes from SQLite ordered descending by id.
+   *
+   * Steps:
+   * 1. Get database instance.
+   * 2. Run SELECT query on animes table.
+   * 3. Map resulting row values to anime entity objects.
+   *
+   * @returns {Promise<Array<Object>>} List of anime records.
+   * @throws {Error} If query fails.
+   */
   async getAnimes() {
     const db = await getOrInitDb();
     const query = `
@@ -173,6 +162,20 @@ export const sqliteStorage = {
     }));
   },
 
+  /**
+   * Inserts an anime record into the SQLite database.
+   *
+   * Steps:
+   * 1. Get database instance.
+   * 2. Execute parameterized INSERT SQL statement.
+   * 3. Query last_insert_rowid() to get new record ID.
+   * 4. Export binary database and persist to storage.
+   * 5. Return created anime object.
+   *
+   * @param {Object} animeData - Anime attributes.
+   * @returns {Promise<Object>} Created anime record.
+   * @throws {Error} If execution fails.
+   */
   async addAnime(animeData) {
     const db = await getOrInitDb();
     const name = (animeData.name || '').trim();
@@ -191,7 +194,7 @@ export const sqliteStorage = {
     const idRes = db.exec('SELECT last_insert_rowid() AS id;');
     const newId = idRes[0]?.values[0]?.[0] || Date.now();
 
-    await persistBytes(db.export());
+    await saveBytes(db.export());
 
     return {
       id: newId,
@@ -204,6 +207,20 @@ export const sqliteStorage = {
     };
   },
 
+  /**
+   * Updates an existing anime record in SQLite.
+   *
+   * Steps:
+   * 1. Dynamically construct UPDATE SQL statement for provided fields.
+   * 2. Run update query with parameters.
+   * 3. Persist exported binary database.
+   * 4. Query and return the updated row.
+   *
+   * @param {number|string} id - Record identifier.
+   * @param {Object} updates - Updated field properties.
+   * @returns {Promise<Object|null>} Updated anime entity.
+   * @throws {Error} If update fails.
+   */
   async updateAnime(id, updates) {
     const db = await getOrInitDb();
     const fields = [];
@@ -232,15 +249,13 @@ export const sqliteStorage = {
 
     fields.push('updated_at = ?');
     values.push(new Date().toISOString());
-
     values.push(id);
 
     const sql = `UPDATE animes SET ${fields.join(', ')} WHERE id = ?;`;
     db.run(sql, values);
 
-    await persistBytes(db.export());
+    await saveBytes(db.export());
 
-    // Fetch updated record
     const res = db.exec('SELECT id, name, total_episodes, watched_episodes, completed, emoji, created_at FROM animes WHERE id = ?;', [id]);
     if (res && res[0]?.values?.[0]) {
       const row = res[0].values[0];
@@ -257,13 +272,36 @@ export const sqliteStorage = {
     return null;
   },
 
+  /**
+   * Deletes an anime record by identifier from SQLite.
+   *
+   * Steps:
+   * 1. Execute DELETE SQL statement.
+   * 2. Persist updated database binary.
+   * 3. Return true.
+   *
+   * @param {number|string} id - Record identifier.
+   * @returns {Promise<boolean>} True if deleted.
+   * @throws {Error} If delete fails.
+   */
   async deleteAnime(id) {
     const db = await getOrInitDb();
     db.run('DELETE FROM animes WHERE id = ?;', [id]);
-    await persistBytes(db.export());
+    await saveBytes(db.export());
     return true;
   },
 
+  /**
+   * Replaces all records in the SQLite animes table with the provided list.
+   *
+   * Steps:
+   * 1. Delete all existing rows.
+   * 2. Insert each anime from the provided collection.
+   * 3. Persist database binary.
+   *
+   * @param {Array<Object>} animes - Anime list to bulk sync.
+   * @returns {Promise<void>}
+   */
   async syncAll(animes) {
     const db = await getOrInitDb();
     db.run('DELETE FROM animes;');
@@ -282,6 +320,6 @@ export const sqliteStorage = {
         ]
       );
     }
-    await persistBytes(db.export());
+    await saveBytes(db.export());
   },
 };

@@ -1,44 +1,72 @@
-// Supabase Storage Adapter (Primary Tier)
-// Communicates with remote Supabase PostgreSQL with fast timeout detection and graceful degradation.
+/** @fileoverview Tier 1 storage adapter communicating with remote Supabase PostgreSQL cloud database. */
 
-import { supabase, supabaseUrl } from '../supabase';
+import { supabase, supabaseUrl } from '../../supabaseClient';
 
 const WORKSPACE_ID = 'my_anime_list';
 const TIMEOUT_MS = 3000;
 
+/**
+ * Executes a promise raced against a timeout timer to prevent indefinite hanging.
+ *
+ * Steps:
+ * 1. Create a timeout promise that rejects after specified milliseconds.
+ * 2. Return Promise.race between the target promise and timeout.
+ *
+ * @param {Promise<any>} promise - Asynchronous operation to bound.
+ * @param {number} [ms=3000] - Timeout threshold in milliseconds.
+ * @param {string} [operation='Supabase operation'] - Descriptive label for timeout error.
+ * @returns {Promise<any>} Result of the input promise.
+ * @throws {Error} If execution exceeds the ms threshold.
+ */
 function withTimeout(promise, ms = TIMEOUT_MS, operation = 'Supabase operation') {
   return Promise.race([
     promise,
-    new Promise((_, reject) =>
-      setTimeout(() => reject(new Error(`${operation} timed out after ${ms}ms`)), ms)
-    ),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error(`${operation} timed out after ${ms}ms`)), ms);
+    }),
   ]);
 }
 
-export const supabaseStorage = {
+/**
+ * Supabase storage adapter object implementing the standard storage interface.
+ */
+export const supabaseAdapter = {
   name: 'supabase',
   displayName: 'Supabase (Cloud)',
 
+  /**
+   * Evaluates whether Supabase database connection and table are reachable.
+   *
+   * Steps:
+   * 1. Check if supabaseUrl and client exist.
+   * 2. Query animes table with limit 1 within 2500ms timeout.
+   * 3. Return true if query succeeds without error, false otherwise.
+   *
+   * @returns {Promise<boolean>} True if Supabase is healthy.
+   * @throws {never}
+   */
   async isHealthy() {
     try {
       if (!supabaseUrl || !supabase) return false;
-      const test = supabase
-        .from('animes')
-        .select('id')
-        .limit(1);
-
+      const test = supabase.from('animes').select('id').limit(1);
       const { error } = await withTimeout(test, 2500, 'Supabase health check');
-      if (error) {
-        console.warn('[SupabaseStorage] Health check failed with error:', error.message);
-        return false;
-      }
-      return true;
-    } catch (e) {
-      console.warn('[SupabaseStorage] Health check failed:', e.message);
+      return !error;
+    } catch {
       return false;
     }
   },
 
+  /**
+   * Retrieves all anime records for the workspace from Supabase.
+   *
+   * Steps:
+   * 1. Query animes matching device_id ordered descending by created_at.
+   * 2. Throw error if response contains an error.
+   * 3. Map database columns to standardized application anime entity schema.
+   *
+   * @returns {Promise<Array<Object>>} List of anime objects.
+   * @throws {Error} If network request fails or times out.
+   */
   async getAnimes() {
     const query = supabase
       .from('animes')
@@ -61,6 +89,18 @@ export const supabaseStorage = {
     }));
   },
 
+  /**
+   * Inserts a new anime record into Supabase.
+   *
+   * Steps:
+   * 1. Format payload matching Supabase snake_case schema with workspace ID.
+   * 2. Execute insert query and select single created row within timeout.
+   * 3. Return formatted anime entity object.
+   *
+   * @param {Object} animeData - Anime attributes.
+   * @returns {Promise<Object>} Persisted anime object.
+   * @throws {Error} If insertion fails or times out.
+   */
   async addAnime(animeData) {
     const newAnime = {
       name: animeData.name.trim(),
@@ -92,6 +132,19 @@ export const supabaseStorage = {
     };
   },
 
+  /**
+   * Updates an existing anime record in Supabase.
+   *
+   * Steps:
+   * 1. Prepare partial updates payload mapping camelCase fields to snake_case.
+   * 2. Execute update query on matching id within timeout.
+   * 3. Return formatted updated entity.
+   *
+   * @param {number|string} id - Record identifier.
+   * @param {Object} updates - Updated field properties.
+   * @returns {Promise<Object>} Updated anime object.
+   * @throws {Error} If update fails or times out.
+   */
   async updateAnime(id, updates) {
     const payload = {};
     if (updates.name !== undefined) payload.name = updates.name.trim();
@@ -121,12 +174,20 @@ export const supabaseStorage = {
     };
   },
 
+  /**
+   * Deletes an anime record by identifier in Supabase.
+   *
+   * Steps:
+   * 1. Execute delete query on matching id within timeout.
+   * 2. Throw error if operation fails.
+   * 3. Return true.
+   *
+   * @param {number|string} id - Record identifier.
+   * @returns {Promise<boolean>} True if deleted.
+   * @throws {Error} If deletion fails or times out.
+   */
   async deleteAnime(id) {
-    const query = supabase
-      .from('animes')
-      .delete()
-      .eq('id', id);
-
+    const query = supabase.from('animes').delete().eq('id', id);
     const { error } = await withTimeout(query, TIMEOUT_MS, 'Deleting anime from Supabase');
     if (error) throw error;
     return true;

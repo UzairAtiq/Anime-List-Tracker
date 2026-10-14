@@ -1,13 +1,26 @@
+/** @fileoverview React hook bridging UI components to the StorageManager multi-tier persistence engine. */
+
 import { useState, useEffect, useCallback } from 'react';
 import { storageManager } from '../lib/storage/storageManager';
 
+/**
+ * Custom hook providing reactive anime records state and CRUD operations via StorageManager.
+ *
+ * Steps:
+ * 1. Maintain local state for animes collection, loading status, syncing flag, and storage engine state.
+ * 2. Subscribe to StorageManager state notifications to reflect live tier status.
+ * 3. On mount, load initial anime records across the storage cascade.
+ * 4. Provide addAnime, updateAnime, and deleteAnime functions with optimistic state updates.
+ * 5. Return state and control handlers.
+ *
+ * @returns {{ animes: Array<Object>, loading: boolean, syncing: boolean, storageState: Object, addAnime: (data: Object) => Promise<Object|undefined>, updateAnime: (id: number|string, updates: Object) => Promise<void>, deleteAnime: (id: number|string) => Promise<void>, refreshAnimes: () => Promise<void> }} Anime state and operations.
+ */
 export function useAnimeSync() {
   const [animes, setAnimes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [storageState, setStorageState] = useState(storageManager.getState());
 
-  // Subscribe to storage manager changes
   useEffect(() => {
     const unsubscribe = storageManager.subscribe((state) => {
       setStorageState(state);
@@ -15,7 +28,6 @@ export function useAnimeSync() {
     return unsubscribe;
   }, []);
 
-  // Load animes using cascading storage manager
   const loadAnimes = useCallback(async () => {
     try {
       setLoading(true);
@@ -28,7 +40,6 @@ export function useAnimeSync() {
     }
   }, []);
 
-  // Add anime with guaranteed fallback
   const addAnime = async (animeData) => {
     try {
       setSyncing(true);
@@ -44,11 +55,9 @@ export function useAnimeSync() {
     }
   };
 
-  // Update anime with guaranteed fallback
   const updateAnime = async (id, updates) => {
     try {
       setSyncing(true);
-      // Optimistic update
       setAnimes((prev) =>
         prev.map((anime) =>
           String(anime.id) === String(id) ? { ...anime, ...updates } : anime
@@ -65,18 +74,15 @@ export function useAnimeSync() {
       }
     } catch (error) {
       console.error('[useAnimeSync] Error updating anime:', error);
-      // Reload on failure
       loadAnimes();
     } finally {
       setSyncing(false);
     }
   };
 
-  // Delete anime with guaranteed fallback
   const deleteAnime = async (id) => {
     try {
       setSyncing(true);
-      // Optimistic remove
       setAnimes((prev) => prev.filter((anime) => String(anime.id) !== String(id)));
       await storageManager.deleteAnime(id);
     } catch (error) {
@@ -87,7 +93,6 @@ export function useAnimeSync() {
     }
   };
 
-  // Initial load
   useEffect(() => {
     loadAnimes();
   }, [loadAnimes]);

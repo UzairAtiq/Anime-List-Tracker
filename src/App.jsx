@@ -4,8 +4,8 @@ import { getRandomEmoji } from './constants/emojis';
 import { Card } from 'pixel-retroui';
 import { useTheme } from './context/ThemeContext';
 import ThemeSwitcher from './components/theme/ThemeSwitcher';
-import AnimeForm from './components/AnimeForm';
-import AnimeList from './components/AnimeList';
+import AnimeForm from './components/anime/AnimeFormModal';
+import AnimeList from './components/anime/AnimeList';
 import { useAnimeSync } from './hooks/useAnimeSync';
 
 function App() {

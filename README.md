@@ -1,5 +1,7 @@
 # Anime List Tracker 📺
 
+Live: [animelist.uzairatiq.app](https://animelist.uzairatiq.app)
+
 A retro terminal-styled web application to track your watched anime series, episode progress, and completion states.
 
 Built with React 19, Tailwind CSS, Framer Motion, Pixel RetroUI, and an infallible 3-tier database architecture.

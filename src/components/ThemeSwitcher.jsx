@@ -1,7 +1,7 @@
 import { motion } from 'framer-motion';
 import { Button } from 'pixel-retroui';
 import { useTheme } from '../context/ThemeContext';
-import { themes } from '../config/themes';
+import { themes } from '../config/themes.config';
 
 export default function ThemeSwitcher() {
   const { theme, changeTheme } = useTheme();

@@ -1,3 +1,10 @@
+/** @fileoverview Defines color themes for the retro terminal user interface. */
+
+/**
+ * Available color themes for the retro terminal UI.
+ * Each theme defines background, text color, and border styling.
+ * @type {Record<string, { name: string, key: string, bg: string, textColor: string, borderColor: string }>}
+ */
 export const themes = {
   theme1: {
     name: 'Warm Beige',
@@ -35,13 +42,3 @@ export const themes = {
     borderColor: '#000000',
   },
 };
-
-export const getTheme = (key) => {
-  return themes[key] || themes.theme1;
-};
-
-export const getDefaultTheme = () => {
-  const saved = localStorage.getItem('retroTheme');
-  return saved && themes[saved] ? themes[saved] : themes.theme1;
-};
-

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { getRandomEmoji } from './data/emojiList';
+import { getRandomEmoji } from './constants/emojis';
 import { Card } from 'pixel-retroui';
 import { useTheme } from './context/ThemeContext';
 import ThemeSwitcher from './components/ThemeSwitcher';

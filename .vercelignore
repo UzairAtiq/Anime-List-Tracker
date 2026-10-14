@@ -1,0 +1,6 @@
+archive
+.git
+.github
+docs
+supabase-setup.sql
+capacitor.config.json

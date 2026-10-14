@@ -1,16 +1,58 @@
-# React + Vite
+# Anime List Tracker 📺
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A retro terminal-styled web application to track your watched anime series, episode progress, and completion states.
 
-Currently, two official plugins are available:
+Built with React 19, Tailwind CSS, Framer Motion, Pixel RetroUI, and an infallible 3-tier database architecture.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-## React Compiler
+## 🏗️ 3-Tier Database Architecture
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+The application implements a cascading fallback storage strategy that guarantees zero data loss:
 
-## Expanding the ESLint configuration
+1. **Tier 1: Supabase (Cloud PostgreSQL)**
+   - Connects to remote Supabase database with automatic 3s timeout protection.
+2. **Tier 2: SQLite WebAssembly (Local Relational Database)**
+   - Runs genuine SQLite in-browser via `sql.js` WebAssembly.
+   - Automatically activates when cloud connection fails or is offline.
+   - Persists binary database state to browser **IndexedDB** with **localStorage** base64 backup.
+3. **Tier 3: Local JSON Store (Infallible Fallback)**
+   - Operates on serialized JSON records stored in `localStorage` or in-memory.
+   - Supports 1-click JSON file export (`anime_list.json`).
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+For full details on file responsibilities, dependency direction, and system flows, see the [Architecture Overview Document](docs/overview.md).
+
+---
+
+## 🚀 Getting Started
+
+### Prerequisites
+- Node.js (v18+)
+- npm or yarn
+
+### Installation
+```bash
+# Clone the repository
+git clone https://github.com/UzairAtiq/Anime-List-Tracker.git
+cd Anime-List-Tracker
+
+# Install dependencies
+npm install
+
+# Start development server
+npm run dev
+```
+
+### Production Build
+```bash
+npm run build
+npm run preview
+```
+
+---
+
+## 📖 Architecture & Documentation
+
+- **[docs/overview.md](docs/overview.md)**: Full architecture breakdown, folder tree, function inventory, and dependency rules.
+- **[supabase-setup.sql](supabase-setup.sql)**: SQL schema and Row-Level Security policies for Supabase deployment.
+- **[.env.example](.env.example)**: Environment variables template for connecting your own Supabase project.

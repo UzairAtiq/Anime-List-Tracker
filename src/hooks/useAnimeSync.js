@@ -1,144 +1,102 @@
-import { useState, useEffect } from 'react';
-import { supabase } from '../lib/supabase';
+import { useState, useEffect, useCallback } from 'react';
+import { storageManager } from '../lib/storage/storageManager';
 
 export function useAnimeSync() {
   const [animes, setAnimes] = useState([]);
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
+  const [storageState, setStorageState] = useState(storageManager.getState());
 
-  // Use a fixed workspace ID so all devices share the same list
-  const workspaceId = 'my_anime_list';
+  // Subscribe to storage manager changes
+  useEffect(() => {
+    const unsubscribe = storageManager.subscribe((state) => {
+      setStorageState(state);
+    });
+    return unsubscribe;
+  }, []);
 
-  // Load animes from Supabase
-  const loadAnimes = async () => {
+  // Load animes using cascading storage manager
+  const loadAnimes = useCallback(async () => {
     try {
       setLoading(true);
-      const { data, error } = await supabase
-        .from('animes')
-        .select('*')
-        .eq('device_id', workspaceId)
-        .order('created_at', { ascending: false });
-
-      if (error) throw error;
-
-      if (data) {
-        setAnimes(data.map(anime => ({
-          id: anime.id,
-          name: anime.name,
-          totalEpisodes: anime.total_episodes,
-          watchedEpisodes: anime.watched_episodes,
-          completed: anime.completed,
-          emoji: anime.emoji,
-        })));
-      }
+      const data = await storageManager.getAnimes();
+      setAnimes(data);
     } catch (error) {
-      console.error('Error loading animes:', error);
-      // Fallback to localStorage if Supabase fails
-      const saved = localStorage.getItem('animeList');
-      if (saved) setAnimes(JSON.parse(saved));
+      console.error('[useAnimeSync] Failed to load animes:', error);
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
 
-  // Add anime to Supabase
+  // Add anime with guaranteed fallback
   const addAnime = async (animeData) => {
     try {
       setSyncing(true);
-      const newAnime = {
-        name: animeData.name,
-        total_episodes: animeData.totalEpisodes || 0,
-        watched_episodes: animeData.watchedEpisodes || 0,
-        completed: animeData.completed || false,
-        emoji: animeData.emoji,
-        device_id: workspaceId,
-      };
-
-      const { data, error } = await supabase
-        .from('animes')
-        .insert([newAnime])
-        .select()
-        .single();
-
-      if (error) throw error;
-
-      if (data) {
-        const formattedAnime = {
-          id: data.id,
-          name: data.name,
-          totalEpisodes: data.total_episodes,
-          watchedEpisodes: data.watched_episodes,
-          completed: data.completed,
-          emoji: data.emoji,
-        };
-        setAnimes(prev => [formattedAnime, ...prev]);
-        return formattedAnime;
+      const savedAnime = await storageManager.addAnime(animeData);
+      if (savedAnime) {
+        setAnimes((prev) => [savedAnime, ...prev.filter((a) => String(a.id) !== String(savedAnime.id))]);
+        return savedAnime;
       }
     } catch (error) {
-      console.error('Error adding anime:', error);
+      console.error('[useAnimeSync] Error adding anime:', error);
     } finally {
       setSyncing(false);
     }
   };
 
-  // Update anime in Supabase
+  // Update anime with guaranteed fallback
   const updateAnime = async (id, updates) => {
     try {
       setSyncing(true);
-      const { error } = await supabase
-        .from('animes')
-        .update(updates)
-        .eq('id', id);
-
-      if (error) throw error;
-
-      setAnimes(prev =>
-        prev.map(anime =>
-          anime.id === id ? { ...anime, ...updates } : anime
+      // Optimistic update
+      setAnimes((prev) =>
+        prev.map((anime) =>
+          String(anime.id) === String(id) ? { ...anime, ...updates } : anime
         )
       );
+
+      const updated = await storageManager.updateAnime(id, updates);
+      if (updated) {
+        setAnimes((prev) =>
+          prev.map((anime) =>
+            String(anime.id) === String(id) ? { ...anime, ...updated } : anime
+          )
+        );
+      }
     } catch (error) {
-      console.error('Error updating anime:', error);
+      console.error('[useAnimeSync] Error updating anime:', error);
+      // Reload on failure
+      loadAnimes();
     } finally {
       setSyncing(false);
     }
   };
 
-  // Delete anime from Supabase
+  // Delete anime with guaranteed fallback
   const deleteAnime = async (id) => {
     try {
       setSyncing(true);
-      const { error } = await supabase
-        .from('animes')
-        .delete()
-        .eq('id', id);
-
-      if (error) throw error;
-
-      setAnimes(prev => prev.filter(anime => anime.id !== id));
+      // Optimistic remove
+      setAnimes((prev) => prev.filter((anime) => String(anime.id) !== String(id)));
+      await storageManager.deleteAnime(id);
     } catch (error) {
-      console.error('Error deleting anime:', error);
+      console.error('[useAnimeSync] Error deleting anime:', error);
+      loadAnimes();
     } finally {
       setSyncing(false);
     }
   };
 
-  // Load animes on mount
+  // Initial load
   useEffect(() => {
     loadAnimes();
-  }, []);
-
-  // Backup to localStorage
-  useEffect(() => {
-    if (!loading) {
-      localStorage.setItem('animeList', JSON.stringify(animes));
-    }
-  }, [animes, loading]);
+  }, [loadAnimes]);
 
   return {
     animes,
     loading,
     syncing,
+    storageState,
     addAnime,
     updateAnime,
     deleteAnime,

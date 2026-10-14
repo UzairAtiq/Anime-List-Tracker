@@ -10,13 +10,24 @@ import { useAnimeSync } from './hooks/useAnimeSync';
 
 function App() {
   const { theme } = useTheme();
-  const { animes, loading, syncing, addAnime, updateAnime, deleteAnime } = useAnimeSync();
+  const { animes, loading, syncing, storageState, addAnime, updateAnime, deleteAnime } = useAnimeSync();
   const [notification, setNotification] = useState(null);
   const [editingAnime, setEditingAnime] = useState(null);
 
   const showNotification = (message, type = 'success') => {
     setNotification({ message, type });
     setTimeout(() => setNotification(null), 3000);
+  };
+
+  const handleExportJSON = () => {
+    const dataStr = 'data:text/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(animes, null, 2));
+    const downloadAnchor = document.createElement('a');
+    downloadAnchor.setAttribute('href', dataStr);
+    downloadAnchor.setAttribute('download', 'anime_list.json');
+    document.body.appendChild(downloadAnchor);
+    downloadAnchor.click();
+    downloadAnchor.remove();
+    showNotification('Exported anime_list.json!', 'info');
   };
 
   const handleAddAnime = async (animeData) => {
@@ -188,8 +199,79 @@ function App() {
                   <ThemeSwitcher />
                 </motion.div>
               </div>
+              
+              {/* Storage Architecture Tier Status */}
+              <div 
+                className="pt-2 pb-1 flex flex-wrap items-center justify-between gap-2 text-xs font-mono"
+                style={{ color: theme.textColor }}
+              >
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="font-black uppercase tracking-wider text-[11px] opacity-75">DB Tier:</span>
+                  
+                  {/* Tier 1: Supabase */}
+                  <span
+                    className="px-2 py-0.5 border text-[10px] sm:text-[11px] font-black uppercase transition-all"
+                    style={{
+                      borderColor: theme.borderColor,
+                      backgroundColor: storageState.activeTier === 'supabase' ? theme.textColor : 'transparent',
+                      color: storageState.activeTier === 'supabase' ? theme.bg : theme.textColor,
+                      opacity: storageState.tierStatuses.supabase.status === 'failed' ? 0.45 : 1,
+                      textDecoration: storageState.tierStatuses.supabase.status === 'failed' ? 'line-through' : 'none',
+                    }}
+                    title={storageState.tierStatuses.supabase.error || 'Tier 1: Supabase Cloud Database'}
+                  >
+                    1. Supabase {storageState.activeTier === 'supabase' ? '● ACTIVE' : (storageState.tierStatuses.supabase.status === 'failed' ? '✗' : '')}
+                  </span>
+
+                  <span className="opacity-50">➔</span>
+
+                  {/* Tier 2: SQLite */}
+                  <span
+                    className="px-2 py-0.5 border text-[10px] sm:text-[11px] font-black uppercase transition-all"
+                    style={{
+                      borderColor: theme.borderColor,
+                      backgroundColor: storageState.activeTier === 'sqlite' ? theme.textColor : 'transparent',
+                      color: storageState.activeTier === 'sqlite' ? theme.bg : theme.textColor,
+                      opacity: storageState.tierStatuses.sqlite.status === 'failed' ? 0.45 : 1,
+                      textDecoration: storageState.tierStatuses.sqlite.status === 'failed' ? 'line-through' : 'none',
+                    }}
+                    title="Tier 2: SQLite WebAssembly (In-browser Relational DB with IndexedDB persistence)"
+                  >
+                    2. SQLite (WASM) {storageState.activeTier === 'sqlite' ? '● ACTIVE' : ''}
+                  </span>
+
+                  <span className="opacity-50">➔</span>
+
+                  {/* Tier 3: JSON */}
+                  <span
+                    className="px-2 py-0.5 border text-[10px] sm:text-[11px] font-black uppercase transition-all"
+                    style={{
+                      borderColor: theme.borderColor,
+                      backgroundColor: storageState.activeTier === 'json' ? theme.textColor : 'transparent',
+                      color: storageState.activeTier === 'json' ? theme.bg : theme.textColor,
+                    }}
+                    title="Tier 3: Local JSON File / Store"
+                  >
+                    3. JSON {storageState.activeTier === 'json' ? '● ACTIVE' : 'STANDBY'}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={handleExportJSON}
+                  className="px-2 py-0.5 border text-[10px] sm:text-[11px] font-black uppercase hover:opacity-80 transition-opacity flex items-center gap-1"
+                  style={{
+                    borderColor: theme.borderColor,
+                    color: theme.textColor,
+                  }}
+                  title="Export database as JSON file"
+                >
+                  <span>💾</span> Export JSON
+                </button>
+              </div>
+
               <motion.div 
-                className="h-px border-t-2"
+                className="h-px border-t-2 mt-2"
                 style={{ borderColor: theme.borderColor }}
                 initial={{ scaleX: 0 }}
                 animate={{ scaleX: 1 }}

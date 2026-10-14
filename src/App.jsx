@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { getRandomEmoji } from './constants/emojis';
 import { Card } from 'pixel-retroui';
 import { useTheme } from './context/ThemeContext';
-import ThemeSwitcher from './components/ThemeSwitcher';
+import ThemeSwitcher from './components/theme/ThemeSwitcher';
 import AnimeForm from './components/AnimeForm';
 import AnimeList from './components/AnimeList';
 import { useAnimeSync } from './hooks/useAnimeSync';
